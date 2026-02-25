@@ -218,8 +218,8 @@ class YakuChecker:
         if is_chankan:
             yaku_list.append(Yaku.CHANKAN)
 
-        # 检查七对子
-        if self.parser.is_chiitoitsu(all_tiles):
+        # 检查七对子（仅门前可能）
+        if is_menzen and self.parser.is_chiitoitsu(all_tiles):
             yaku_list.append(Yaku.CHIITOITSU)
             # 七对子不能有其他面子役，直接返回
             return yaku_list
@@ -233,24 +233,26 @@ class YakuChecker:
         if self._check_tanyao(all_tiles):
             yaku_list.append(Yaku.TANYAO)
 
-        # 役牌
+        # 役牌（合并暗刻+明刻+杠）
         yakuhai = self._check_yakuhai(pattern, prevalent_wind, seat_wind)
         yaku_list.extend(yakuhai)
 
-        # 一杯口和二杯口
+        # 一杯口和二杯口（门前限定，只看暗顺）
         if is_menzen:
             if self._check_ryanpeikou(pattern):
                 yaku_list.append(Yaku.RYANPEIKOU)
             elif self._check_iipeikou(pattern):
                 yaku_list.append(Yaku.IIPEIKOU)
 
-        # 三色同顺
+        # 三色同顺（非门前降番）
         if self._check_sanshoku_doujun(pattern):
-            yaku_list.append(Yaku.SANSHOKU_DOUJUN)
+            han = 2 if is_menzen else 1
+            yaku_list.append(("三色同顺", han))
 
-        # 一气通贯
+        # 一气通贯（非门前降番）
         if self._check_ittsu(pattern):
-            yaku_list.append(Yaku.ITTSU)
+            han = 2 if is_menzen else 1
+            yaku_list.append(("一气通贯", han))
 
         # 对对和
         if self._check_toitoi(pattern):
@@ -264,13 +266,19 @@ class YakuChecker:
         if self._check_sanshoku_doukou(pattern):
             yaku_list.append(Yaku.SANSHOKU_DOUKOU)
 
-        # 混全带幺九
-        if self._check_chanta(pattern):
-            yaku_list.append(Yaku.CHANTA)
+        # 三杠子
+        if pattern.kan_count == 3:
+            yaku_list.append(Yaku.SANKANTSU)
 
-        # 纯全带幺九
+        # 混全带幺九（非门前降番）
+        if self._check_chanta(pattern):
+            han = 2 if is_menzen else 1
+            yaku_list.append(("混全带幺九", han))
+
+        # 纯全带幺九（非门前降番）
         if self._check_junchan(pattern):
-            yaku_list.append(Yaku.JUNCHAN)
+            han = 3 if is_menzen else 2
+            yaku_list.append(("纯全带幺九", han))
 
         # 混老头
         if self._check_honroutou(all_tiles):
@@ -280,12 +288,12 @@ class YakuChecker:
         if self._check_shousangen(pattern):
             yaku_list.append(Yaku.SHOUSANGEN)
 
-        # 混一色
+        # 混一色（非门前降番）
         if self._check_honitsu(all_tiles):
             han = 3 if is_menzen else 2
             yaku_list.append(("混一色", han))
 
-        # 清一色
+        # 清一色（非门前降番）
         if self._check_chinitsu(all_tiles):
             han = 6 if is_menzen else 5
             yaku_list.append(("清一色", han))
@@ -337,6 +345,10 @@ class YakuChecker:
         if self._check_shousuushi(pattern):
             return [Yaku.SHOUSUUSHI]
 
+        # 四杠子
+        if pattern.kan_count == 4:
+            return [Yaku.SUUKANTSU]
+
         return yakuman if yakuman else None
 
     def _check_pinfu(
@@ -369,11 +381,20 @@ class YakuChecker:
             if self._is_yakuhai_tile(jantou_tile, seat_wind, prevalent_wind):
                 return False
 
-        # 检查是否两面听（这里简化处理）
-        # 实际需要检查和牌是否在顺子的中间位置
+        # 检查是否两面听
         for shuntsu in pattern.shuntsu:
-            if win_tile == shuntsu[1]:  # 和牌在顺子中间
-                return True
+            if win_tile not in shuntsu:
+                continue
+            # 坎张：和了中间的牌
+            if win_tile == shuntsu[1]:
+                return False
+            # 边张：123和3 或 789和7
+            if win_tile == shuntsu[2] and shuntsu[0].value == 1:
+                return False
+            if win_tile == shuntsu[0] and shuntsu[2].value == 9:
+                return False
+            # 到这里就是两面听
+            return True
 
         return False
 
@@ -388,14 +409,12 @@ class YakuChecker:
     def _check_yakuhai(
         self, pattern: MentsuPattern, prevalent_wind: str, seat_wind: str
     ) -> List[Tuple[str, int]]:
-        """役牌判断"""
+        """役牌判断：合并暗刻+明刻+明杠+暗杠"""
         yakuhai = []
 
-        # 统计字牌刻子
-        for koutsu in pattern.koutsu:
-            tile = koutsu[0]
+        for group in pattern.all_koutsu_and_kantsu:
+            tile = group[0]
             if tile.is_honor():
-                # 风牌
                 if tile.value == 1 and (prevalent_wind == "E" or seat_wind == "E"):
                     yakuhai.append(Yaku.YAKUHAI_TON)
                 elif tile.value == 2 and (prevalent_wind == "S" or seat_wind == "S"):
@@ -404,7 +423,6 @@ class YakuChecker:
                     yakuhai.append(Yaku.YAKUHAI_SHA)
                 elif tile.value == 4 and (prevalent_wind == "N" or seat_wind == "N"):
                     yakuhai.append(Yaku.YAKUHAI_PEI)
-                # 三元牌
                 elif tile.value == 5:
                     yakuhai.append(Yaku.YAKUHAI_HAKU)
                 elif tile.value == 6:
@@ -470,23 +488,18 @@ class YakuChecker:
         return counts == [2, 2]
 
     def _check_sanshoku_doujun(self, pattern: MentsuPattern) -> bool:
-        """
-        三色同顺判断
-
-        条件：万筒索各有一组相同数字的顺子
-        """
-        if len(pattern.shuntsu) < 3:
+        """三色同顺判断：万筒索各有一组相同数字的顺子"""
+        all_s = pattern.all_shuntsu
+        if len(all_s) < 3:
             return False
 
-        # 按花色分组顺子
         by_type = {TileType.MANZU: [], TileType.PINZU: [], TileType.SOUZU: []}
-        for shuntsu in pattern.shuntsu:
+        for shuntsu in all_s:
             tile_type = shuntsu[0].tile_type
             if tile_type in by_type:
                 values = (shuntsu[0].value, shuntsu[1].value, shuntsu[2].value)
                 by_type[tile_type].append(values)
 
-        # 检查是否有相同的顺子数字组合
         for m_values in by_type[TileType.MANZU]:
             if (
                 m_values in by_type[TileType.PINZU]
@@ -497,23 +510,17 @@ class YakuChecker:
         return False
 
     def _check_ittsu(self, pattern: MentsuPattern) -> bool:
-        """
-        一气通贯判断
-
-        条件：同一花色有123、456、789三组顺子
-        """
-        if len(pattern.shuntsu) < 3:
+        """一气通贯判断：同一花色有123、456、789三组顺子"""
+        all_s = pattern.all_shuntsu
+        if len(all_s) < 3:
             return False
 
-        # 按花色分组
         by_type = {TileType.MANZU: set(), TileType.PINZU: set(), TileType.SOUZU: set()}
-        for shuntsu in pattern.shuntsu:
+        for shuntsu in all_s:
             tile_type = shuntsu[0].tile_type
             if tile_type in by_type:
-                start_value = shuntsu[0].value
-                by_type[tile_type].add(start_value)
+                by_type[tile_type].add(shuntsu[0].value)
 
-        # 检查是否有1、4、7开头的顺子
         for values in by_type.values():
             if 1 in values and 4 in values and 7 in values:
                 return True
@@ -521,46 +528,33 @@ class YakuChecker:
         return False
 
     def _check_toitoi(self, pattern: MentsuPattern) -> bool:
-        """对对和判断：4个刻子"""
-        return len(pattern.koutsu) == 4
+        """对对和判断：4个刻子/杠子"""
+        return len(pattern.all_koutsu_and_kantsu) == 4 and len(pattern.all_shuntsu) == 0
 
     def _check_sanankou(
         self, pattern: MentsuPattern, win_tile: Tile, is_tsumo: bool, melds: List[Meld]
     ) -> bool:
-        """
-        三暗刻判断
+        """三暗刻判断：有3个暗刻（暗刻 + 暗杠）"""
+        ankou_count = len(pattern.ankan)  # 暗杠算暗刻
 
-        条件：有3个暗刻（未副露的刻子）
-        """
-        if len(pattern.koutsu) < 3:
-            return False
-
-        # 计算暗刻数量
-        ankou_count = 0
-        for koutsu in pattern.koutsu:
-            # 如果是自摸，或者和牌不在这个刻子中，则为暗刻
+        for koutsu in pattern.koutsu:  # 只看暗刻
             if is_tsumo or win_tile not in koutsu:
                 ankou_count += 1
 
         return ankou_count >= 3
 
     def _check_sanshoku_doukou(self, pattern: MentsuPattern) -> bool:
-        """
-        三色同刻判断
-
-        条件：万筒索各有一组相同数字的刻子
-        """
-        if len(pattern.koutsu) < 3:
+        """三色同刻判断：万筒索各有一组相同数字的刻子/杠子"""
+        all_k = pattern.all_koutsu_and_kantsu
+        if len(all_k) < 3:
             return False
 
-        # 按花色分组刻子
         by_type = {TileType.MANZU: set(), TileType.PINZU: set(), TileType.SOUZU: set()}
-        for koutsu in pattern.koutsu:
-            tile_type = koutsu[0].tile_type
+        for group in all_k:
+            tile_type = group[0].tile_type
             if tile_type in by_type:
-                by_type[tile_type].add(koutsu[0].value)
+                by_type[tile_type].add(group[0].value)
 
-        # 检查是否有相同数字
         for value in by_type[TileType.MANZU]:
             if value in by_type[TileType.PINZU] and value in by_type[TileType.SOUZU]:
                 return True
@@ -626,20 +620,11 @@ class YakuChecker:
         return all(tile.is_terminal() for tile in tiles)
 
     def _check_shousangen(self, pattern: MentsuPattern) -> bool:
-        """
-        小三元判断
-
-        条件：白发中中有2个刻子，1个雀头
-        """
-        dragon_koutsu = 0
-        dragon_jantou = False
-
-        for koutsu in pattern.koutsu:
-            if koutsu[0].is_dragon():
-                dragon_koutsu += 1
-
-        if pattern.jantou and pattern.jantou[0].is_dragon():
-            dragon_jantou = True
+        """小三元判断：白发中中有2个刻/杠，1个雀头"""
+        dragon_koutsu = sum(
+            1 for g in pattern.all_koutsu_and_kantsu if g[0].is_dragon()
+        )
+        dragon_jantou = pattern.jantou and pattern.jantou[0].is_dragon()
 
         return dragon_koutsu == 2 and dragon_jantou
 
@@ -677,15 +662,17 @@ class YakuChecker:
         return len(tile_types) == 1
 
     def _check_suuankou(self, pattern: MentsuPattern, is_menzen: bool) -> bool:
-        """四暗刻判断：4个暗刻"""
-        return is_menzen and len(pattern.koutsu) == 4 and len(pattern.shuntsu) == 0
+        """四暗刻判断：4个暗刻/暗杠"""
+        if not is_menzen:
+            return False
+        ankou = len(pattern.koutsu) + len(pattern.ankan)
+        return ankou == 4 and len(pattern.all_shuntsu) == 0
 
     def _check_daisangen(self, pattern: MentsuPattern) -> bool:
-        """大三元判断：白发中都是刻子"""
-        dragon_koutsu = 0
-        for koutsu in pattern.koutsu:
-            if koutsu[0].is_dragon():
-                dragon_koutsu += 1
+        """大三元判断：白发中都是刻/杠"""
+        dragon_koutsu = sum(
+            1 for g in pattern.all_koutsu_and_kantsu if g[0].is_dragon()
+        )
         return dragon_koutsu == 3
 
     def _check_tsuuiisou(self, tiles: List[Tile]) -> bool:
@@ -702,23 +689,13 @@ class YakuChecker:
         return True
 
     def _check_daisuushi(self, pattern: MentsuPattern) -> bool:
-        """大四喜判断：东南西北都是刻子"""
-        wind_koutsu = 0
-        for koutsu in pattern.koutsu:
-            if koutsu[0].is_wind():
-                wind_koutsu += 1
+        """大四喜判断：东南西北都是刻/杠"""
+        wind_koutsu = sum(1 for g in pattern.all_koutsu_and_kantsu if g[0].is_wind())
         return wind_koutsu == 4
 
     def _check_shousuushi(self, pattern: MentsuPattern) -> bool:
-        """小四喜判断：东南西北中3个刻子+1个雀头"""
-        wind_koutsu = 0
-        wind_jantou = False
-
-        for koutsu in pattern.koutsu:
-            if koutsu[0].is_wind():
-                wind_koutsu += 1
-
-        if pattern.jantou and pattern.jantou[0].is_wind():
-            wind_jantou = True
+        """小四喜判断：东南西北中3个刻/杠+1个雀头"""
+        wind_koutsu = sum(1 for g in pattern.all_koutsu_and_kantsu if g[0].is_wind())
+        wind_jantou = pattern.jantou and pattern.jantou[0].is_wind()
 
         return wind_koutsu == 3 and wind_jantou

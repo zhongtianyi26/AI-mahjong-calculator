@@ -226,7 +226,7 @@ class TestBestPatternSelection:
         """
         111222333m123p11z + win=1z, 自摸
         拆法1（刻子）：三暗刻+自摸 = 3番40符 = 5200
-        拆法2（顺子）：一杯口+混全带幺九+自摸 = 4番30符 = 7700
+        拆法2（顺子）：一杯口+混全带幺九+自摸 = 4番30符 = 7900（庄3900+闲2000×2）
         Calculator 应选拆法2，点数更高。
         """
         r = calc.calculate(
@@ -238,7 +238,7 @@ class TestBestPatternSelection:
         assert r.han == 4
         assert any(name == "一杯口" for name, _ in r.yaku_list)
         assert any(name == "混全带幺九" for name, _ in r.yaku_list)
-        assert r.total_points == 7700
+        assert r.total_points == 7900
 
     def test_calculator_sanankou_is_best(self, calc):
         """

@@ -88,11 +88,41 @@ class FuCalculator:
             jantou_tile = pattern.jantou[0]
             fu += self._calculate_jantou_fu(jantou_tile, seat_wind, prevalent_wind)
 
-        # 面子符
+        # ---- 暗刻符 ----
         for koutsu in pattern.koutsu:
+            tile = koutsu[0]
+            # 荣和时，如果和牌刚好组成这个刻子，则视为明刻
+            if not is_tsumo and win_tile == tile:
+                fu += self._calculate_koutsu_fu(
+                    tile, is_anko=False, is_terminal=tile.is_terminal()
+                )
+            else:
+                fu += self._calculate_koutsu_fu(
+                    tile, is_anko=True, is_terminal=tile.is_terminal()
+                )
+
+        # ---- 明刻符（碰） ----
+        for koutsu in pattern.open_koutsu:
+            tile = koutsu[0]
             fu += self._calculate_koutsu_fu(
-                koutsu[0], is_anko=is_menzen, is_terminal=koutsu[0].is_terminal()
+                tile, is_anko=False, is_terminal=tile.is_terminal()
             )
+
+        # ---- 明杠符 ----
+        for kantsu in pattern.min_kantsu:
+            tile = kantsu[0]
+            if tile.is_terminal():
+                fu += 16  # 幺九明杠
+            else:
+                fu += 8  # 中张明杠
+
+        # ---- 暗杠符 ----
+        for kantsu in pattern.ankan:
+            tile = kantsu[0]
+            if tile.is_terminal():
+                fu += 32  # 幺九暗杠
+            else:
+                fu += 16  # 中张暗杠
 
         # 听牌形式符（边张、坎张、单骑）
         fu += self._calculate_wait_fu(pattern, win_tile)

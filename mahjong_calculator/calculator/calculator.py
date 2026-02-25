@@ -3,7 +3,7 @@
 """
 
 from typing import List, Optional, Dict, Tuple
-from .tiles import Tile, parse_tiles_string, Meld
+from .tiles import Tile, parse_tiles_string, Meld, MeldType
 from .parser import HandParser
 from .yaku import YakuChecker, Yaku
 from .fu import FuCalculator
@@ -26,6 +26,11 @@ class CalculationResult:
         self.indicator_dora_count: int = 0  # 表宝牌数
         self.ura_dora_count: int = 0  # 里宝牌数
         self.red_dora_count: int = 0  # 赤宝牌数
+        self.is_tsumo_result: bool = False  # 是否自摸（用于格式化支付）
+        self.each_pays: int = 0  # 庄家自摸：各家支付
+        self.dealer_pays: int = 0  # 闲家自摸：庄家支付
+        self.non_dealer_pays: int = 0  # 闲家自摸：闲家各支付
+        self.direct_pay: int = 0  # 荣和：放铳者支付
         self.is_valid: bool = True  # 是否合法
         self.error_message: str = ""  # 错误信息
 
@@ -79,14 +84,14 @@ class Calculator:
         is_chankan: bool = False,
         is_tenhou: bool = False,
         is_chiihou: bool = False,
-        melds: List[Dict] = None,
+        melds: List[Meld] = None,
         honba: int = 0,
     ) -> CalculationResult:
         """
         计算麻将点数
 
         Args:
-            hand: 手牌字符串，如 "123m456p789s1122z"（13张，不含和牌）
+            hand: 门前手牌字符串（不含和牌、不含副露牌）
             win_tile: 和牌，如 "2z"
             is_tsumo: 是否自摸
             is_riichi: 是否立直
@@ -103,7 +108,7 @@ class Calculator:
             is_chankan: 是否抢杠
             is_tenhou: 是否天和
             is_chiihou: 是否地和
-            melds: 副露列表
+            melds: 副露列表（Meld 对象）
             honba: 本场数
 
         Returns:
@@ -116,29 +121,49 @@ class Calculator:
             hand_tiles = parse_tiles_string(hand)
             win_tile_obj = Tile.from_string(win_tile)
 
-            # 检查手牌数量
-            if len(hand_tiles) != 13:
+            # 检查手牌数量（杠有4张牌但只占3格手牌位，因为会补一张）
+            meld_list = melds or []
+            kan_count = sum(
+                1 for m in meld_list if m.meld_type in (MeldType.KAN, MeldType.ANKAN)
+            )
+            meld_tile_count = sum(len(m.tiles) for m in meld_list)
+            expected_hand = 13 - meld_tile_count + kan_count
+            if len(hand_tiles) != expected_hand:
                 result.is_valid = False
-                result.error_message = f"手牌必须是13张，当前为{len(hand_tiles)}张"
+                result.error_message = (
+                    f"手牌数量错误：期望{expected_hand}张（有{len(meld_list)}副露），"
+                    f"实际{len(hand_tiles)}张"
+                )
                 return result
 
-            # 判断是否门前清
-            is_menzen = not melds or len(melds) == 0
+            # 判断是否门前清（暗杠不破坏门前）
+            is_menzen = all(not m.is_open() for m in meld_list)
 
-            # 解析面子组合
-            patterns = self.parser.parse(hand_tiles, win_tile_obj)
+            # 立直/双立直要求门前
+            if (is_riichi or is_double_riichi) and not is_menzen:
+                result.is_valid = False
+                result.error_message = "副露后不能立直"
+                return result
+
+            # 解析面子组合（传入副露）
+            patterns = self.parser.parse(
+                hand_tiles, win_tile_obj, melds=meld_list if meld_list else None
+            )
 
             if not patterns:
                 result.is_valid = False
                 result.error_message = "无法识别有效的和牌型"
                 return result
 
+            # ---- 全部牌（含副露）用于宝牌统计 ----
+            all_tiles = hand_tiles + [win_tile_obj]
+            for m in meld_list:
+                all_tiles.extend(m.tiles)
+
             # ---- 计算宝牌番数（与拆法无关，提前算好）----
             dora_count = 0
             indicator_dora_count = 0
             ura_dora_count = 0
-
-            all_tiles = hand_tiles + [win_tile_obj]
 
             if dora_indicators:
                 dora_tiles = [self._get_dora_tile(ind) for ind in dora_indicators]
@@ -174,7 +199,7 @@ class Calculator:
             for pattern in patterns:
                 # 对该拆法检查役种
                 cur_yaku = self.yaku_checker._check_yaku_for_pattern(
-                    all_tiles=hand_tiles + [win_tile_obj],
+                    all_tiles=all_tiles,
                     pattern=pattern,
                     win_tile=win_tile_obj,
                     is_tsumo=is_tsumo,
@@ -190,7 +215,7 @@ class Calculator:
                     is_chiihou=is_chiihou,
                     prevalent_wind=prevalent_wind,
                     seat_wind=seat_wind,
-                    melds=None,
+                    melds=meld_list if meld_list else None,
                 )
 
                 # 追加宝牌（已含赤宝牌）
@@ -222,6 +247,7 @@ class Calculator:
                     is_chiitoitsu=cur_is_chiitoitsu,
                     seat_wind=seat_wind,
                     prevalent_wind=prevalent_wind,
+                    melds=meld_list if meld_list else None,
                 )
 
                 # 计算点数
@@ -258,6 +284,11 @@ class Calculator:
             result.total_points = points_info["total_points"]
             result.payment_detail = points_info["payment_detail"]
             result.name = points_info.get("name")
+            result.is_tsumo_result = is_tsumo
+            result.each_pays = points_info.get("each_pays") or 0
+            result.dealer_pays = points_info.get("dealer_pays") or 0
+            result.non_dealer_pays = points_info.get("non_dealer_pays") or 0
+            result.direct_pay = points_info.get("direct_pay") or 0
 
             return result
 

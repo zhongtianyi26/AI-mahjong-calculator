@@ -1,23 +1,24 @@
 """
-临时可视化演示脚本 —— 随机生成可和手牌并交互式计算点数
+临时可视化演示脚本  随机生成可和手牌并自动计算所有场景点数
 后续可直接删除此文件，不影响核心代码。
 """
 
 import random
 import sys
 from collections import Counter
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from mahjong_calculator.calculator.tiles import (
     Tile,
     TileType,
-    parse_tiles_string,
+    Meld,
+    MeldType,
     tiles_to_string,
 )
 from mahjong_calculator.calculator.parser import HandParser
 from mahjong_calculator.calculator.calculator import Calculator
 
-# ─── 常量 ──────────────────────────────────────────────
+#  常量
 WIND_NAMES = {"E": "东", "S": "南", "W": "西", "N": "北"}
 WIND_LIST = ["E", "S", "W", "N"]
 TILE_DISPLAY = {
@@ -30,15 +31,15 @@ TILE_DISPLAY = {
     "7m": "七万",
     "8m": "八万",
     "9m": "九万",
-    "1p": "一筒",
-    "2p": "二筒",
-    "3p": "三筒",
-    "4p": "四筒",
-    "5p": "五筒",
-    "6p": "六筒",
-    "7p": "七筒",
-    "8p": "八筒",
-    "9p": "九筒",
+    "1p": "一饼",
+    "2p": "二饼",
+    "3p": "三饼",
+    "4p": "四饼",
+    "5p": "五饼",
+    "6p": "六饼",
+    "7p": "七饼",
+    "8p": "八饼",
+    "9p": "九饼",
     "1s": "一索",
     "2s": "二索",
     "3s": "三索",
@@ -55,308 +56,767 @@ TILE_DISPLAY = {
     "5z": "白",
     "6z": "发",
     "7z": "中",
-    "0m": "赤五万",
-    "0p": "赤五筒",
-    "0s": "赤五索",
+    "0m": "五万",
+    "0p": "五饼",
+    "0s": "五索",
 }
 
-
-# ─── 牌山 ──────────────────────────────────────────────
-def build_wall(use_red_dora: bool = True) -> List[Tile]:
-    """
-    构建一副完整的牌山 (136张)。
-    每种牌各 4 张；如果启用赤宝牌，则 5m/5p/5s 各有一张替换为赤五。
-    """
-    wall: List[Tile] = []
-    for suit in [TileType.MANZU, TileType.PINZU, TileType.SOUZU]:
-        for v in range(1, 10):
-            for copy_idx in range(4):
-                if use_red_dora and v == 5 and copy_idx == 0:
-                    wall.append(Tile(5, suit, is_red=True))
-                else:
-                    wall.append(Tile(v, suit))
-    for v in range(1, 8):
-        for _ in range(4):
-            wall.append(Tile(v, TileType.JIHAI))
-    random.shuffle(wall)
-    return wall
+# ─── ANSI 颜色 ───────────────────────────────────────
+_RESET = "\033[0m"
+_RED = "\033[91m"  # 赤宝牌
+_GOLD = "\033[93m"  # 宝牌命中
+_CYAN = "\033[96m"  # 字牌和牌高亮
+_MANZU = "\033[38;5;208m"  # 万子（橙）
+_PINZU = "\033[34m"  # 饼子（蓝）
+_SOUZU = "\033[32m"  # 索子（绿）
+_DIM = "\033[2m"  # 暗色
+_BOLD = "\033[1m"  # 加粗
+_GRY = "\033[90m"  # 灰色（无效行）
 
 
-# ─── 随机生成可和手牌 ─────────────────────────────────
-def generate_winning_hand(
-    wall: List[Tile],
-) -> Optional[Tuple[List[Tile], Tile, List[Tile]]]:
+#  ASCII 牌面渲染
+def _display_width(s: str) -> int:
+    w = 0
+    for ch in s:
+        cp = ord(ch)
+        if (
+            0x2E80 <= cp <= 0x303E
+            or 0x3041 <= cp <= 0x33FF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0x4E00 <= cp <= 0x9FFF
+            or 0xAC00 <= cp <= 0xD7AF
+            or 0xF900 <= cp <= 0xFAFF
+            or 0xFE30 <= cp <= 0xFE6F
+            or 0xFF01 <= cp <= 0xFF60
+            or 0xFFE0 <= cp <= 0xFFE6
+            or 0x20000 <= cp <= 0x2FA1F
+        ):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def _pad_center(s: str, width: int) -> str:
+    cur = _display_width(s)
+    if cur >= width:
+        return s
+    total = width - cur
+    left = total // 2
+    return " " * left + s + " " * (total - left)
+
+
+def render_tile_visual(
+    tile: Tile, highlight: bool = False, color_code: str = ""
+) -> List[str]:
+    face = TILE_DISPLAY.get(tile.to_string(), tile.to_string())
+    face = face[:2] if len(face) > 2 else face
+    inner = _pad_center(face, 4)
+    top = "╔════╗" if highlight else "┌────┐"
+    bot = "╚════╝" if highlight else "└────┘"
+    side = "║" if highlight else "│"
+    if color_code:
+        r = _RESET
+        return [
+            f"{color_code}{top}{r}",
+            f"{color_code}{side}{inner}{side}{r}",
+            f"{color_code}{bot}{r}",
+        ]
+    return [top, f"{side}{inner}{side}", bot]
+
+
+def render_tiles_visual(
+    tiles: List[Tile], per_line: int = 7, highlight_last: bool = False
+) -> str:
+    if not tiles:
+        return ""
+    lines: List[str] = []
+    for i in range(0, len(tiles), per_line):
+        chunk = tiles[i : i + per_line]
+        hi_flags = [False] * len(chunk)
+        if highlight_last and i + per_line >= len(tiles):
+            hi_flags[-1] = True
+        tile_rows = [render_tile_visual(t, hi_flags[j]) for j, t in enumerate(chunk)]
+        for row_idx in range(3):
+            lines.append(" ".join(tr[row_idx] for tr in tile_rows))
+    return "\n".join(lines)
+
+
+def render_hand_and_win(
+    hand: List[Tile], win_tile: Tile, dora_tiles: set = None
+) -> str:
+    """手牌 13 张 + 分隔符 + 和牌 1 张，全部在同一行显示。
+    dora_tiles: 宝牌实际牌面集合（由宝牌指示牌推算），用于着色。
+    赤宝牌 → 红色，普通宝牌命中 → 金色，和牌双边框 → 青色。
     """
-    从牌山中随机抽取手牌，使其恰好可以和牌。
-    返回 (hand_13, win_tile, remaining_wall)
-    如果多次尝试都无法生成，返回 None。
-    """
-    parser = HandParser()
-    for _ in range(2000):
-        random.shuffle(wall)
-        # 随机选 14 张
-        sample14 = wall[:14]
-        rest = wall[14:]
-        if parser.parse(sample14[:13], sample14[13]):
-            return sample14[:13], sample14[13], rest
-    return None
+    dora_set = dora_tiles or set()
+
+    def _suit_color(t: Tile) -> str:
+        if t.tile_type == TileType.MANZU:
+            return _MANZU
+        if t.tile_type == TileType.PINZU:
+            return _PINZU
+        if t.tile_type == TileType.SOUZU:
+            return _SOUZU
+        return ""
+
+    def tile_color(t: Tile) -> str:
+        if t.is_red:
+            return _RED
+        if t in dora_set:
+            return _GOLD
+        return _suit_color(t)  # 字牌返回 ""
+
+    hand_rows = [
+        render_tile_visual(t, highlight=False, color_code=tile_color(t)) for t in hand
+    ]
+    wc = tile_color(win_tile)
+    win_color = wc if wc else _CYAN  # 字牌和牌 fallback 青色
+    win_rows = [render_tile_visual(win_tile, highlight=True, color_code=win_color)]
+    sep = ["  ", "  ", "  "]  # 3 行分隔符
+    all_cols = hand_rows + [sep] + win_rows
+    lines = []
+    for row_idx in range(3):
+        lines.append(" ".join(col[row_idx] for col in all_cols))
+    return "\n".join(lines)
 
 
 def display_tile(tile: Tile) -> str:
-    """可视化单张牌"""
-    key = tile.to_string()
-    return TILE_DISPLAY.get(key, key)
+    return TILE_DISPLAY.get(tile.to_string(), tile.to_string())
 
 
-def display_tiles(tiles: List[Tile]) -> str:
-    """可视化牌列表"""
-    return " ".join(display_tile(t) for t in sorted(tiles))
+def render_indicator_row(
+    indicators: List[str], calc: Calculator, label: str = "宝牌指示牌"
+) -> str:
+    """将宝牌指示牌以可视化牌面渲染成单行（3行ASCII），附带标签。"""
+    ind_tiles = [Tile.from_string(s) for s in indicators]
+
+    def _suit_color(t: Tile) -> str:
+        if t.tile_type == TileType.MANZU:
+            return _MANZU
+        if t.tile_type == TileType.PINZU:
+            return _PINZU
+        if t.tile_type == TileType.SOUZU:
+            return _SOUZU
+        return ""
+
+    cols = [
+        render_tile_visual(t, highlight=False, color_code=_suit_color(t))
+        for t in ind_tiles
+    ]
+    lines = []
+    for row in range(3):
+        lines.append("  " + " ".join(c[row] for c in cols))
+    return "\n".join(lines)
 
 
-def display_tiles_compact(tiles: List[Tile]) -> str:
-    """紧凑编码 + 中文"""
-    compact = tiles_to_string(sorted(tiles))
-    chinese = display_tiles(tiles)
-    return f"{compact}  ({chinese})"
+def render_tile_back() -> List[str]:
+    """渲染牌背（暗杠中间两张用）"""
+    return [
+        f"{_DIM}┌────┐{_RESET}",
+        f"{_DIM}│████│{_RESET}",
+        f"{_DIM}└────┘{_RESET}",
+    ]
 
 
-# ─── 随机场况 ─────────────────────────────────────────
+def render_meld_row(melds_list: List[Meld], dora_set: set = None) -> str:
+    """将副露以可视化牌面渲染成单行（3行ASCII），各副露间用空白分隔。
+    暗杠：中间两张翻过去显示为牌背。"""
+    if not melds_list:
+        return ""
+
+    _dora = dora_set or set()
+
+    def _suit_color(t: Tile) -> str:
+        if t.tile_type == TileType.MANZU:
+            return _MANZU
+        if t.tile_type == TileType.PINZU:
+            return _PINZU
+        if t.tile_type == TileType.SOUZU:
+            return _SOUZU
+        return ""
+
+    def _tile_color(t: Tile) -> str:
+        if t.is_red:
+            return _RED
+        if t in _dora:
+            return _GOLD
+        return _suit_color(t)
+
+    groups: List[List[List[str]]] = []
+    for m in melds_list:
+        if m.meld_type == MeldType.ANKAN:
+            # 暗杠：两侧牌背，中间两张正面
+            tile_cols = [
+                render_tile_back(),
+                render_tile_visual(
+                    m.tiles[1], highlight=False, color_code=_tile_color(m.tiles[1])
+                ),
+                render_tile_visual(
+                    m.tiles[2], highlight=False, color_code=_tile_color(m.tiles[2])
+                ),
+                render_tile_back(),
+            ]
+        else:
+            tile_cols = [
+                render_tile_visual(t, highlight=False, color_code=_tile_color(t))
+                for t in m.tiles
+            ]
+        groups.append(tile_cols)
+
+    lines = []
+    for row in range(3):
+        parts = []
+        for g in groups:
+            parts.append(" ".join(c[row] for c in g))
+        lines.append("  " + "   ".join(parts))
+    return "\n".join(lines)
+
+
+#  从构造好的面子结构中生成合法副露
+def generate_melds_from_hand(
+    hand: List[Tile], win_tile: Tile, mentsu_keys: list
+) -> Tuple[List[Tile], Tile, List[Meld]]:
+    """
+    从已知四面子结构中随机将1~2个面子转为副露(吃/碰/明杠/暗杠)。
+    刻子有约10%几率升级为杠（需第4张可用）。
+    返回 (新手牌, 和牌, 副露列表)。
+    """
+    n_furo = random.randint(1, min(2, len(mentsu_keys)))
+    indices = random.sample(range(len(mentsu_keys)), n_furo)
+    furo_melds: List[Meld] = []
+
+    all14 = list(hand) + [win_tile]
+    remaining = list(all14)
+    tile_counts = Counter((t.value, t.tile_type) for t in all14)
+
+    def _extract(remaining_list, value, tile_type):
+        """从 remaining 中取出一张匹配的实际牌（保留赤宝状态）"""
+        for i, r in enumerate(remaining_list):
+            if r.value == value and r.tile_type == tile_type:
+                return remaining_list.pop(i)
+        return None
+
+    for idx in indices:
+        keys = mentsu_keys[idx]
+        if keys[0] == keys[1]:
+            # 刻子
+            tile_key = keys[0]  # (value, tile_type)
+            gang = 1  # ~10% 几率升级为杠（第4张牌必须可用：手里只有3张）
+            if random.random() < gang and tile_counts[tile_key] < 4:
+                extracted = [
+                    _extract(remaining, tile_key[0], tile_key[1]) for _ in range(3)
+                ]
+                extracted = [t for t in extracted if t is not None]
+                # 第4张：合成（不在手里，视为从牌山摸来）
+                extracted.append(Tile(tile_key[0], tile_key[1]))
+                meld_type = random.choice([MeldType.KAN, MeldType.ANKAN])
+                furo_melds.append(Meld(meld_type, extracted))
+            else:
+                # 碰
+                extracted = [
+                    _extract(remaining, tile_key[0], tile_key[1]) for _ in range(3)
+                ]
+                extracted = [t for t in extracted if t is not None]
+                furo_melds.append(Meld(MeldType.PON, extracted))
+        else:
+            # 顺子 → 吃
+            extracted = [_extract(remaining, k[0], k[1]) for k in keys]
+            extracted = [t for t in extracted if t is not None]
+            furo_melds.append(Meld(MeldType.CHI, extracted))
+
+    # 和牌从剩余中随机取一张
+    random.shuffle(remaining)
+    new_win = remaining[-1]
+    new_hand = remaining[:-1]
+    return new_hand, new_win, furo_melds
+
+
+ALL_NUM_TILES = [
+    (v, t)
+    for t in [TileType.MANZU, TileType.PINZU, TileType.SOUZU]
+    for v in range(1, 10)
+] + [(v, TileType.JIHAI) for v in range(1, 8)]
+SHUNTSU_STARTS = [
+    (v, s)
+    for s in [TileType.MANZU, TileType.PINZU, TileType.SOUZU]
+    for v in range(1, 8)
+]
+
+
+def generate_winning_hand_fast(
+    use_red_dora: bool = True,
+) -> Tuple[List[Tile], Tile, List[str], List[str], list]:
+    """直接构造合法和牌：随机雀头 + 4 面子，即建即得，成功率接近100%
+    返回: (hand, win_tile, dora_indicators, ura_indicators, mentsu_keys)
+    mentsu_keys 用于后续生成副露变体。
+    """
+    parser = HandParser()
+
+    while True:
+        counts: Counter = Counter()
+
+        jv, jt = random.choice(ALL_NUM_TILES)
+        counts[(jv, jt)] += 2
+        if counts[(jv, jt)] > 4:
+            continue
+
+        melds = []
+        ok = True
+        for _ in range(4):
+            use_shuntsu = (jt == TileType.JIHAI) or random.random() < 0.65
+            if use_shuntsu:
+                sv, st = random.choice(SHUNTSU_STARTS)
+                keys = [(sv, st), (sv + 1, st), (sv + 2, st)]
+                for k in keys:
+                    counts[k] += 1
+                    if counts[k] > 4:
+                        ok = False
+                        break
+                if not ok:
+                    break
+                melds.append(keys)
+            else:
+                kv, kt = random.choice(ALL_NUM_TILES)
+                counts[(kv, kt)] += 3
+                if counts[(kv, kt)] > 4:
+                    ok = False
+                    break
+                melds.append([(kv, kt)] * 3)
+        if not ok:
+            continue
+
+        # 每花色赤五限1张
+        red_used: Counter = Counter()
+
+        def make_tile(v: int, t: TileType) -> Tile:
+            if (
+                use_red_dora
+                and v == 5
+                and t != TileType.JIHAI
+                and red_used[t] == 0
+                and random.random() < 0.25
+            ):
+                red_used[t] += 1
+                return Tile(5, t, is_red=True)
+            return Tile(v, t)
+
+        all14: List[Tile] = [make_tile(jv, jt), make_tile(jv, jt)]
+        for keys in melds:
+            for kv, kt in keys:
+                all14.append(make_tile(kv, kt))
+
+        random.shuffle(all14)
+        win_idx = random.randrange(14)
+        hand = [t for i, t in enumerate(all14) if i != win_idx]
+        win = all14[win_idx]
+
+        if not parser.parse(hand, win):
+            continue
+
+        # 从逻辑牌库中抽宝牌指示牌
+        pool = [Tile(v, t) for v, t in ALL_NUM_TILES]
+        random.shuffle(pool)
+        kan_count = random.choices([0, 1], weights=[3, 1])[0]
+        n = 1 + kan_count
+        dora_ind = [t.to_string() for t in pool[:n]]
+        ura_ind = [t.to_string() for t in pool[n : n * 2]]
+        return hand, win, dora_ind, ura_ind, melds
+
+
+#  随机场况（场风只有东/南，去掉本场）
 def random_game_context() -> dict:
-    prevalent = random.choice(WIND_LIST)
+    prevalent = random.choice(["E", "S"])
     seat = random.choice(WIND_LIST)
-    is_dealer = seat == prevalent  # 简化：场风==自风即为庄
-    honba = random.randint(0, 3)
     return {
         "prevalent_wind": prevalent,
         "seat_wind": seat,
-        "is_dealer": is_dealer,
-        "honba": honba,
+        "is_dealer": seat == "E",
     }
 
 
-# ─── 从剩余牌山中抽宝牌指示牌 ──────────────────────────
-def draw_dora_indicators(
-    remaining_wall: List[Tile], kan_count: int = 0
-) -> Tuple[List[str], List[str]]:
-    """
-    抽取宝牌指示牌和里宝牌指示牌。
-    基础 1 张表宝牌 + 每开一杠多 1 张，里宝牌同理。
-    """
-    total = 1 + kan_count  # 表宝牌张数
-    random.shuffle(remaining_wall)
+#  交互式条件选择 → 单次计算
+CONDITION_MENU = [
+    # (键, 显示名, kwarg键, 值, 互斥组, 需门清)
+    ("1", "自摸", "is_tsumo", True, "win", False),
+    ("2", "荣和", "is_tsumo", False, "win", False),
+    ("3", "立直", "is_riichi", True, "riichi", True),
+    ("4", "双立直", "is_double_riichi", True, "riichi", True),
+    ("5", "一发", "is_ippatsu", True, None, True),
+    ("6", "海底", "is_haitei", True, "bottom", False),
+    ("7", "河底", "is_houtei", True, "bottom", False),
+    ("8", "岭上", "is_rinshan", True, "special", False),
+    ("9", "抢杠", "is_chankan", True, "special", False),
+]
 
-    dora_ind = [t.to_string() for t in remaining_wall[:total]]
-    ura_ind = [t.to_string() for t in remaining_wall[total : total * 2]]
-    return dora_ind, ura_ind
-
-
-# ─── 交互选择 ─────────────────────────────────────────
-def yes_no(prompt: str, default: bool = False) -> bool:
-    hint = "[Y/n]" if default else "[y/N]"
-    ans = input(f"  {prompt} {hint}: ").strip().lower()
-    if ans == "":
-        return default
-    return ans in ("y", "yes", "是")
-
-
-def choose_one(prompt: str, options: List[str], default_idx: int = 0) -> int:
-    print(f"  {prompt}")
-    for i, opt in enumerate(options):
-        marker = " *" if i == default_idx else ""
-        print(f"    [{i}] {opt}{marker}")
-    ans = input(f"  请选择 (默认 {default_idx}): ").strip()
-    if ans == "":
-        return default_idx
-    try:
-        idx = int(ans)
-        if 0 <= idx < len(options):
-            return idx
-    except ValueError:
-        pass
-    return default_idx
+# 自动冲突检测规则
+_CONFLICT_RULES = {
+    # 海底→必须自摸, 河底→必须荣和
+    "is_haitei": {"requires": {"is_tsumo": True}},
+    "is_houtei": {"requires": {"is_tsumo": False}},
+    # 岭上→必须自摸, 抢杠→必须荣和
+    "is_rinshan": {"requires": {"is_tsumo": True}},
+    "is_chankan": {"requires": {"is_tsumo": False}},
+    # 一发→需要立直或双立直
+    "is_ippatsu": {"requires_any": ["is_riichi", "is_double_riichi"]},
+}
 
 
-# ─── 主流程 ───────────────────────────────────────────
+def _prompt_conditions(is_menzen: bool) -> dict:
+    """交互式显示条件菜单，返回 kwargs dict。"""
+    selected: dict = {}  # kwarg_key -> value
+    group_selected: dict = {}  # group -> kwarg_key
+
+    print(f"\n  {_BOLD}── 选择和牌条件 ──{_RESET}")
+    print(f"  输入编号切换(可多选，空格/逗号分隔)，直接回车=荣和(无特殊条件)")
+
+    # 显示菜单
+    for key, name, kwarg, val, group, need_menzen in CONDITION_MENU:
+        disabled = need_menzen and not is_menzen
+        status = f" {_GRY}(需门清){_RESET}" if disabled else ""
+        print(f"    {key}. {name}{status}")
+
+    ans = input("  选择: ").strip()
+    if not ans:
+        return {"is_tsumo": False}  # 默认荣和
+
+    choices = set()
+    for ch in ans.replace(",", " ").replace("，", " ").split():
+        choices.add(ch.strip())
+
+    for key, name, kwarg, val, group, need_menzen in CONDITION_MENU:
+        if key in choices:
+            if need_menzen and not is_menzen:
+                print(f"    {_GRY}⚠ {name} 需要门清，已跳过{_RESET}")
+                continue
+            # 互斥组检查
+            if group and group in group_selected:
+                old_key = group_selected[group]
+                print(f"    {_GRY}⚠ {name} 与已选条件互斥，已跳过{_RESET}")
+                continue
+            selected[kwarg] = val
+            if group:
+                group_selected[group] = kwarg
+
+    # 默认自摸/荣和
+    if "is_tsumo" not in selected:
+        selected["is_tsumo"] = False
+
+    # 冲突自动修正
+    for kwarg, rule in _CONFLICT_RULES.items():
+        if kwarg not in selected:
+            continue
+        if "requires" in rule:
+            for rk, rv in rule["requires"].items():
+                if selected.get(rk) is not None and selected[rk] != rv:
+                    req_name = "自摸" if rv else "荣和"
+                    print(
+                        f"    {_GOLD}⚠ 自动切换为{req_name}（因选了相关条件）{_RESET}"
+                    )
+                selected[rk] = rv
+        if "requires_any" in rule:
+            if not any(selected.get(k) for k in rule["requires_any"]):
+                print(f"    {_GRY}⚠ 一发需要立直/双立直，已移除一发{_RESET}")
+                del selected[kwarg]
+
+    return selected
+
+
+def compute_single(
+    calc: Calculator,
+    hand: List[Tile],
+    win_tile: Tile,
+    ctx: dict,
+    dora_indicators: List[str],
+    ura_dora_indicators: List[str],
+    melds: List[Meld] = None,
+    conditions: dict = None,
+) -> dict:
+    """根据用户选择的条件做单次计算"""
+    cond = conditions or {"is_tsumo": False}
+    is_riichi = cond.get("is_riichi", False) or cond.get("is_double_riichi", False)
+
+    kwargs = dict(
+        hand=tiles_to_string(hand),
+        win_tile=win_tile.to_string(),
+        is_tsumo=cond.get("is_tsumo", False),
+        is_riichi=cond.get("is_riichi", False),
+        is_double_riichi=cond.get("is_double_riichi", False),
+        is_ippatsu=cond.get("is_ippatsu", False),
+        is_dealer=ctx["is_dealer"],
+        prevalent_wind=ctx["prevalent_wind"],
+        seat_wind=ctx["seat_wind"],
+        dora_indicators=dora_indicators,
+        ura_dora_indicators=ura_dora_indicators if is_riichi else None,
+        is_haitei=cond.get("is_haitei", False),
+        is_houtei=cond.get("is_houtei", False),
+        is_rinshan=cond.get("is_rinshan", False),
+        is_chankan=cond.get("is_chankan", False),
+        melds=melds,
+        honba=0,
+    )
+    r = calc.calculate(**kwargs)
+
+    # 组装显示标签
+    parts = []
+    if cond.get("is_double_riichi"):
+        parts.append("双立直")
+    elif cond.get("is_riichi"):
+        parts.append("立直")
+    if cond.get("is_ippatsu"):
+        parts.append("一发")
+    if cond.get("is_tsumo"):
+        parts.append("自摸")
+    else:
+        parts.append("荣和")
+    if cond.get("is_haitei"):
+        parts.append("海底")
+    if cond.get("is_houtei"):
+        parts.append("河底")
+    if cond.get("is_rinshan"):
+        parts.append("岭上")
+    if cond.get("is_chankan"):
+        parts.append("抢杠")
+    label = "+".join(parts) if parts else "荣和"
+
+    return {"label": label, "result": r}
+
+
+#  结果表格输出
+def _w(s: str, width: int) -> str:
+    cur = _display_width(s)
+    return s + " " * max(0, width - cur)
+
+
+def show_single_result(item: dict, section_title: str = ""):
+    """显示单次计算结果"""
+    BD = f"{_DIM}│{_RESET}"
+    label = item["label"]
+    r = item["result"]
+
+    if section_title:
+        print(f"\n  {_BOLD}━━ {section_title}: {label} ━━{_RESET}")
+    else:
+        print(f"\n  {_BOLD}━━ {label} ━━{_RESET}")
+
+    if not r.is_valid:
+        err = r.error_message or "无役"
+        print(f"  {_GRY}✗ {err}{_RESET}")
+        return
+
+    # 役种
+    yaku_parts = [f"{n}({h}番)" for n, h in r.yaku_list if not n.startswith("宝牌")]
+    dp = []
+    if r.indicator_dora_count:
+        dp.append(f"表{r.indicator_dora_count}")
+    if r.ura_dora_count:
+        dp.append(f"里{r.ura_dora_count}")
+    if r.red_dora_count:
+        dp.append(f"赤{r.red_dora_count}")
+    dora_str = f" {_GOLD}+宝[{'+'.join(dp)}]{_RESET}" if dp else ""
+    tag_str = f"{_BOLD}【{r.name}】{_RESET} " if r.name else ""
+
+    fu_str = f"{r.fu}符" if r.fu else ""
+    print(
+        f"  {_BOLD}{r.han}番{_RESET} {fu_str}  {tag_str}{' '.join(yaku_parts)}{dora_str}"
+    )
+    print(f"  {_BOLD}点数: {r.total_points}{_RESET}")
+
+    if r.is_tsumo_result:
+        if r.each_pays:
+            print(f"  支付: {r.each_pays} all")
+        else:
+            print(f"  支付: 闲家各{r.non_dealer_pays} / 庄家{r.dealer_pays}")
+    else:
+        pay = r.direct_pay if r.direct_pay else r.total_points
+        print(f"  支付: 放铳者 {pay}")
+
+
+#  拆法展示
+def show_patterns(
+    hand: List[Tile], win_tile: Tile, parser: HandParser, melds: List[Meld] = None
+):
+    patterns = parser.parse(hand, win_tile, melds=melds)
+    if not patterns:
+        print("   无合法拆法")
+        return
+    all14 = hand + [win_tile]
+    for i, pat in enumerate(patterns):
+        if not pat.jantou and not pat.shuntsu and not pat.koutsu:
+            cnt = Counter(all14)
+            kind = (
+                "七对子"
+                if (len(cnt) == 7 and all(v == 2 for v in cnt.values()))
+                else "国士无双"
+            )
+            print(f"  拆法{i+1}: {kind}")
+        else:
+            parts = []
+            if pat.jantou:
+                parts.append(
+                    f"对[{display_tile(pat.jantou[0])}{display_tile(pat.jantou[1])}]"
+                )
+            for s in pat.shuntsu:
+                parts.append(
+                    f"顺[{display_tile(s[0])}{display_tile(s[1])}{display_tile(s[2])}]"
+                )
+            for k in pat.koutsu:
+                parts.append(
+                    f"刻[{display_tile(k[0])}{display_tile(k[1])}{display_tile(k[2])}]"
+                )
+            for s in pat.open_shuntsu:
+                parts.append(
+                    f"吃[{display_tile(s[0])}{display_tile(s[1])}{display_tile(s[2])}]"
+                )
+            for k in pat.open_koutsu:
+                parts.append(
+                    f"碰[{display_tile(k[0])}{display_tile(k[1])}{display_tile(k[2])}]"
+                )
+            for k in pat.min_kantsu:
+                parts.append(f"明杠[{display_tile(k[0])}×4]")
+            for k in pat.ankan:
+                parts.append(f"暗杠[{display_tile(k[0])}×4]")
+            print(f"  拆法{i+1}: " + "  ".join(parts))
+
+
+def _meld_type_label(m: Meld) -> str:
+    labels = {
+        MeldType.CHI: "吃",
+        MeldType.PON: "碰",
+        MeldType.KAN: "明杠",
+        MeldType.ANKAN: "暗杠",
+    }
+    return labels.get(m.meld_type, "?")
+
+
+#  主流程
 def main():
-    print("=" * 60)
+    print("=" * 70)
     print("  麻将计点可视化演示  (临时脚本，可直接删除)")
-    print("=" * 60)
+    print("  生成手牌 → 选择条件 → 计算点数")
+    print("  [Enter]继续  [v]查看拆法  [q]退出")
+    print("=" * 70)
 
     calc = Calculator()
     parser = HandParser()
 
     while True:
-        print("\n─── 生成新局面 ───")
-        wall = build_wall(use_red_dora=True)
-        result = generate_winning_hand(wall)
-        if result is None:
-            print("  ❌ 无法生成可和手牌，重试...")
-            continue
-
-        hand_tiles, win_tile, remaining = result
+        hand_tiles, win_tile, dora_indicators, ura_dora_indicators, mentsu_keys = (
+            generate_winning_hand_fast(use_red_dora=True)
+        )
         ctx = random_game_context()
 
-        # 杠数（随机 0~1，影响宝牌数量）
-        kan_count = random.choice([0, 0, 0, 1])
+        # ── 场况信息 ──
+        dealer_str = "亲家(庄)" if ctx["is_dealer"] else "子家(闲)"
+        kan_count = len(dora_indicators) - 1
 
-        # 抽宝牌指示牌
-        dora_indicators, ura_dora_indicators = draw_dora_indicators(
-            remaining, kan_count
+        print(f"\n{'═'*70}")
+        print(
+            f"  {WIND_NAMES[ctx['prevalent_wind']]}风场  "
+            f"自风:{WIND_NAMES[ctx['seat_wind']]}  {dealer_str}  "
+            f"开杠:{kan_count}"
         )
 
-        # ─── 展示场况 ────────────────────────────────
-        print(f"\n  场风: {WIND_NAMES[ctx['prevalent_wind']]}风场")
-        print(f"  自风: {WIND_NAMES[ctx['seat_wind']]}")
-        print(f"  身份: {'亲家 (庄家)' if ctx['is_dealer'] else '子家 (闲家)'}")
-        print(f"  本场: {ctx['honba']} 本场")
-        if kan_count > 0:
-            print(f"  开杠: {kan_count} 杠 (额外宝牌指示牌)")
-        print()
+        # ── 宝牌指示牌 ──
+        print(f"  表宝牌指示牌 ({len(dora_indicators)}枚):")
+        print(render_indicator_row(dora_indicators, calc, "表宝牌指示牌"))
+        print(f"  里宝牌指示牌 ({len(ura_dora_indicators)}枚):")
+        print(render_indicator_row(ura_dora_indicators, calc, "里宝牌指示牌"))
 
-        # ─── 展示手牌 ────────────────────────────────
-        print(f"  手牌 (13张): {display_tiles_compact(hand_tiles)}")
-        print(f"  和牌:        {display_tile(win_tile)} ({win_tile.to_string()})")
-        print()
+        # ── 手牌渲染 ──
+        dora_tiles_set = {calc._get_dora_tile(ind) for ind in dora_indicators}
+        ura_tiles_set = {calc._get_dora_tile(ind) for ind in ura_dora_indicators}
+        all_dora_set = dora_tiles_set | ura_tiles_set
+        print("  手牌 (万=橙  饼=蓝  索=绿  金=宝牌  亮红=赤  青=和牌):")
+        print(render_hand_and_win(sorted(hand_tiles), win_tile, all_dora_set))
 
-        # ─── 宝牌指示牌 ──────────────────────────────
-        print(f"  宝牌指示牌 ({len(dora_indicators)}张):")
-        for ind in dora_indicators:
-            dora = calc._get_dora_tile(ind)
-            print(
-                f"    指示牌 {display_tile(Tile.from_string(ind))} → 宝牌 {display_tile(dora)}"
+        # ── 生成副露变体 ──
+        furo_hand, furo_win, furo_melds = [], win_tile, []
+        furo_ok = False
+        try:
+            furo_hand, furo_win, furo_melds = generate_melds_from_hand(
+                hand_tiles, win_tile, mentsu_keys
             )
-        print()
-
-        # ─── 手动选项 ────────────────────────────────
-        print("  ── 和牌条件 ──")
-        win_method = choose_one("和牌方式:", ["自摸 (ツモ)", "荣和 (ロン)"])
-        is_tsumo = win_method == 0
-
-        is_riichi = yes_no("立直?")
-        is_double_riichi = False
-        is_ippatsu = False
-        if is_riichi:
-            is_double_riichi = yes_no("双立直?")
-            is_ippatsu = yes_no("一发?")
-
-        is_haitei = False
-        is_houtei = False
-        is_rinshan = False
-        is_chankan = False
-
-        if is_tsumo:
-            is_haitei = yes_no("海底捞月 (最后一张自摸)?")
-            if kan_count > 0:
-                is_rinshan = yes_no("岭上开花 (杠后摸牌)?")
-        else:
-            is_houtei = yes_no("河底捞鱼 (最后一张荣和)?")
-            is_chankan = yes_no("抢杠?")
-
-        # ─── 里宝牌 ──────────────────────────────────
-        show_ura = is_riichi or is_double_riichi
-        if show_ura:
-            print(f"\n  里宝牌指示牌 ({len(ura_dora_indicators)}张):")
-            for ind in ura_dora_indicators:
-                dora = calc._get_dora_tile(ind)
-                print(
-                    f"    指示牌 {display_tile(Tile.from_string(ind))} → 里宝牌 {display_tile(dora)}"
+            if parser.parse(furo_hand, furo_win, melds=furo_melds):
+                furo_ok = True
+                meld_desc = "  ".join(
+                    f"{_meld_type_label(m)}[{''.join(display_tile(t) for t in m.tiles)}]"
+                    for m in furo_melds
                 )
-        else:
-            ura_dora_indicators = None
-            print("\n  (非立直，无里宝牌)")
+                print(f"\n  副露: {meld_desc}")
+                print(render_meld_row(furo_melds, all_dora_set))
+                print("  副露后手牌:")
+                print(render_hand_and_win(sorted(furo_hand), furo_win, all_dora_set))
+        except Exception as e:
+            print(f"\n  {_GRY}(副露生成失败: {e}){_RESET}")
 
-        # ─── 解析拆法 ────────────────────────────────
-        print("\n  ── 手牌拆解 ──")
-        patterns = parser.parse(hand_tiles, win_tile)
-        if not patterns:
-            print("  ❌ 无法拆解为合法和牌型")
-            _continue_or_quit()
-            continue
-
-        for i, pat in enumerate(patterns):
-            print(f"  拆法 {i + 1}:")
-            if pat.jantou:
-                head = pat.jantou
-                print(f"    雀头: {display_tile(head[0])} {display_tile(head[1])}")
-            if pat.shuntsu:
-                for s in pat.shuntsu:
-                    print(
-                        f"    顺子: {display_tile(s[0])} {display_tile(s[1])} {display_tile(s[2])}"
-                    )
-            if pat.koutsu:
-                for k in pat.koutsu:
-                    print(
-                        f"    刻子: {display_tile(k[0])} {display_tile(k[1])} {display_tile(k[2])}"
-                    )
-            if not pat.jantou and not pat.shuntsu and not pat.koutsu:
-                # 特殊型（七对子/国士）
-                all14 = sorted(hand_tiles + [win_tile])
-                from collections import Counter as C
-
-                cnt = C(all14)
-                if len(cnt) == 7 and all(v == 2 for v in cnt.values()):
-                    print(f"    七对子: {display_tiles(all14)}")
-                else:
-                    print(f"    国士无双: {display_tiles(all14)}")
-        print()
-
-        # ─── 计算点数 ────────────────────────────────
-        print("  ── 计算结果 ──")
-        r = calc.calculate(
-            hand=tiles_to_string(hand_tiles),
-            win_tile=win_tile.to_string(),
-            is_tsumo=is_tsumo,
-            is_riichi=is_riichi,
-            is_double_riichi=is_double_riichi,
-            is_ippatsu=is_ippatsu,
-            is_dealer=ctx["is_dealer"],
-            prevalent_wind=ctx["prevalent_wind"],
-            seat_wind=ctx["seat_wind"],
-            dora_indicators=dora_indicators,
-            ura_dora_indicators=ura_dora_indicators if show_ura else None,
-            is_haitei=is_haitei,
-            is_houtei=is_houtei,
-            is_rinshan=is_rinshan,
-            is_chankan=is_chankan,
-            honba=ctx["honba"],
+        # ── 判断门清/副露 ──
+        is_furo = furo_ok and any(m.is_open() for m in furo_melds)
+        only_ankan = (
+            furo_ok
+            and not is_furo
+            and any(m.meld_type == MeldType.ANKAN for m in furo_melds)
         )
 
-        if not r.is_valid:
-            print(f"  ❌ {r.error_message}")
-        else:
-            # 役种
-            print("  役种:")
-            for name, han in r.yaku_list:
-                print(f"    {name}: {han} 番")
+        # ── 循环选择条件计算 ──
+        while True:
+            print(f"\n  {'─'*40}")
+            if furo_ok:
+                mode_choice = (
+                    input("  计算哪种？ [1]门清  [2]副露  [n]换牌  [v]拆法  [q]退出: ")
+                    .strip()
+                    .lower()
+                )
+            else:
+                mode_choice = (
+                    input("  [Enter]选条件计算  [n]换牌  [v]拆法  [q]退出: ")
+                    .strip()
+                    .lower()
+                )
 
-            # 宝牌明细
-            if r.dora_count > 0:
-                details = []
-                if r.indicator_dora_count > 0:
-                    details.append(f"表{r.indicator_dora_count}")
-                if r.ura_dora_count > 0:
-                    details.append(f"里{r.ura_dora_count}")
-                if r.red_dora_count > 0:
-                    details.append(f"赤{r.red_dora_count}")
-                print(f"    (宝牌构成: {' + '.join(details)} = {r.dora_count})")
+            if mode_choice in ("q", "quit", "exit"):
+                print("  再见！")
+                sys.exit(0)
+            if mode_choice == "n":
+                break  # 换牌
+            if mode_choice == "v":
+                print("  ── 门清拆法 ──")
+                show_patterns(hand_tiles, win_tile, parser)
+                if furo_ok and furo_melds:
+                    print("  ── 副露拆法 ──")
+                    show_patterns(furo_hand, furo_win, parser, melds=furo_melds)
+                continue
 
-            print()
-            if r.name:
-                print(f"  {r.name}!")
-            print(f"  {r.han} 番 / {r.fu} 符")
-            print(f"  总点数: {r.total_points} 点")
-            print(f"  {r.payment_detail}")
+            # 确定使用的手牌
+            if mode_choice == "2" and furo_ok:
+                use_hand, use_win, use_melds = furo_hand, furo_win, furo_melds
+                is_menzen = not is_furo
+                section = "副露"
+            elif mode_choice == "1" or (not furo_ok and mode_choice in ("", "1")):
+                use_hand, use_win, use_melds = hand_tiles, win_tile, None
+                is_menzen = True
+                section = "门前清"
+            else:
+                continue
 
-        _continue_or_quit()
+            # 选择条件
+            conditions = _prompt_conditions(is_menzen)
 
-
-def _continue_or_quit():
-    print()
-    ans = input("  按 Enter 继续生成下一局，输入 q 退出: ").strip().lower()
-    if ans in ("q", "quit", "exit"):
-        print("  再见！")
-        sys.exit(0)
+            result = compute_single(
+                calc,
+                use_hand,
+                use_win,
+                ctx,
+                dora_indicators,
+                ura_dora_indicators,
+                melds=use_melds,
+                conditions=conditions,
+            )
+            show_single_result(result, section_title=section)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  再见！")

@@ -3,33 +3,84 @@
 """
 
 from typing import List, Tuple, Optional, Set
-from .tiles import Tile, parse_tiles_string
+from .tiles import Tile, Meld, MeldType, parse_tiles_string
 from collections import Counter
 
 
 class MentsuPattern:
-    """面子模式"""
+    """面子模式
+
+    所有面子（暗+明+杠）统一存储，同时分别标记暗/明便于役种和符数判断。
+    """
 
     def __init__(
         self,
-        shuntsu: List[Tuple[Tile, Tile, Tile]],
-        koutsu: List[Tuple[Tile, Tile, Tile]],
+        shuntsu: List[Tuple[Tile, Tile, Tile]] = None,
+        koutsu: List[Tuple[Tile, Tile, Tile]] = None,
         jantou: Optional[Tuple[Tile, Tile]] = None,
+        open_shuntsu: List[Tuple[Tile, Tile, Tile]] = None,
+        open_koutsu: List[Tuple[Tile, Tile, Tile]] = None,
+        min_kantsu: List[Tuple[Tile, ...]] = None,
+        ankan: List[Tuple[Tile, ...]] = None,
     ):
         """
-        初始化面子模式
-
         Args:
-            shuntsu: 顺子列表
-            koutsu: 刻子列表（包括暗刻和明刻）
-            jantou: 雀头（对子）
+            shuntsu: 暗顺子（门前手牌拆出的）
+            koutsu:  暗刻子（门前手牌拆出的）
+            jantou:  雀头
+            open_shuntsu: 明顺子（吃）
+            open_koutsu:  明刻子（碰）
+            min_kantsu:   明杠（大明杠 / 加杠）
+            ankan:        暗杠
         """
-        self.shuntsu = shuntsu  # 顺子
-        self.koutsu = koutsu  # 刻子
+        self.shuntsu = shuntsu or []  # 暗顺
+        self.koutsu = koutsu or []  # 暗刻
         self.jantou = jantou  # 雀头
+        self.open_shuntsu = open_shuntsu or []  # 明顺
+        self.open_koutsu = open_koutsu or []  # 明刻
+        self.min_kantsu = min_kantsu or []  # 明杠
+        self.ankan = ankan or []  # 暗杠
+
+    # ---- 便捷属性 ----
+    @property
+    def all_shuntsu(self) -> List[Tuple[Tile, Tile, Tile]]:
+        """所有顺子（暗+明）"""
+        return self.shuntsu + self.open_shuntsu
+
+    @property
+    def all_koutsu(self) -> List[Tuple[Tile, Tile, Tile]]:
+        """所有刻子（暗+明，不含杠）"""
+        return self.koutsu + self.open_koutsu
+
+    @property
+    def all_koutsu_and_kantsu(self) -> list:
+        """所有刻/杠（暗刻+明刻+明杠+暗杠）"""
+        return self.koutsu + self.open_koutsu + self.min_kantsu + self.ankan
+
+    @property
+    def mentsu_count(self) -> int:
+        """面子总数"""
+        return (
+            len(self.shuntsu)
+            + len(self.koutsu)
+            + len(self.open_shuntsu)
+            + len(self.open_koutsu)
+            + len(self.min_kantsu)
+            + len(self.ankan)
+        )
+
+    @property
+    def kan_count(self) -> int:
+        """杠子总数"""
+        return len(self.min_kantsu) + len(self.ankan)
 
     def __repr__(self):
-        return f"MentsuPattern(顺子={len(self.shuntsu)}, 刻子={len(self.koutsu)}, 雀头={self.jantou is not None})"
+        return (
+            f"MentsuPattern(暗顺={len(self.shuntsu)}, 暗刻={len(self.koutsu)}, "
+            f"明顺={len(self.open_shuntsu)}, 明刻={len(self.open_koutsu)}, "
+            f"明杠={len(self.min_kantsu)}, 暗杠={len(self.ankan)}, "
+            f"雀头={self.jantou is not None})"
+        )
 
 
 class HandParser:
@@ -46,35 +97,78 @@ class HandParser:
         pass
 
     def parse(
-        self, hand: List[Tile], win_tile: Optional[Tile] = None
+        self,
+        hand: List[Tile],
+        win_tile: Optional[Tile] = None,
+        melds: List[Meld] = None,
     ) -> List[MentsuPattern]:
         """
         解析手牌，返回所有可能的面子组合
 
         Args:
-            hand: 手牌列表（13张，不含和牌）
-            win_tile: 和牌（可选，如果提供则为14张完整手牌）
+            hand: 手牌列表（门前牌，含和牌时13张，有副露时更少）
+            win_tile: 和牌（可选，如果提供则加入门前牌一起拆）
+            melds: 已声明的副露列表
 
         Returns:
             所有可能的面子组合模式列表
         """
-        # 如果提供了和牌，则将其加入手牌
-        all_tiles = hand.copy()
+        # 门前部分的牌
+        closed_tiles = hand.copy()
         if win_tile:
-            all_tiles.append(win_tile)
+            closed_tiles.append(win_tile)
 
-        # 检查是否是七对子
-        if self.is_chiitoitsu(all_tiles):
-            return [self._create_chiitoitsu_pattern(all_tiles)]
+        # 将副露转为 pattern 字段
+        open_shuntsu: List[Tuple[Tile, Tile, Tile]] = []
+        open_koutsu: List[Tuple[Tile, Tile, Tile]] = []
+        min_kantsu: List[Tuple[Tile, ...]] = []
+        ankan_list: List[Tuple[Tile, ...]] = []
 
-        # 检查是否是国士无双
-        if self.is_kokushi(all_tiles):
-            return [self._create_kokushi_pattern(all_tiles)]
+        if melds:
+            for m in melds:
+                ts = tuple(sorted(m.tiles))
+                if m.meld_type == MeldType.CHI:
+                    open_shuntsu.append(ts[:3])
+                elif m.meld_type == MeldType.PON:
+                    open_koutsu.append(ts[:3])
+                elif m.meld_type == MeldType.KAN:
+                    min_kantsu.append(ts)
+                elif m.meld_type == MeldType.ANKAN:
+                    ankan_list.append(ts)
 
-        # 解析标准型
-        patterns = self._parse_standard(all_tiles)
+        n_closed = len(closed_tiles)
+        # 副露后门前牌张数: 14 - 3*chi/pon - 4*kan/ankan
+        meld_open = (
+            len(open_shuntsu) + len(open_koutsu) + len(min_kantsu) + len(ankan_list)
+        )
 
-        return patterns
+        # 全部14张用于七对子/国士判断（仅门前时有效）
+        if not melds:
+            all_tiles_flat = closed_tiles
+            if self.is_chiitoitsu(all_tiles_flat):
+                return [MentsuPattern(jantou=None)]  # 七对子特殊 pattern
+
+            if self.is_kokushi(all_tiles_flat):
+                return [MentsuPattern(jantou=None)]  # 国士特殊 pattern
+
+        # 门前部分需要拆的面子数
+        needed = 4 - meld_open
+        if needed < 0:
+            return []
+
+        # 对门前牌做标准拆解
+        patterns = self._parse_standard_flexible(closed_tiles, needed)
+
+        # 将副露面子注入每个 pattern
+        result = []
+        for pat in patterns:
+            pat.open_shuntsu = list(open_shuntsu)
+            pat.open_koutsu = list(open_koutsu)
+            pat.min_kantsu = list(min_kantsu)
+            pat.ankan = list(ankan_list)
+            result.append(pat)
+
+        return result
 
     def is_chiitoitsu(self, tiles: List[Tile]) -> bool:
         """
@@ -154,39 +248,37 @@ class HandParser:
         """创建国士无双模式（特殊处理）"""
         return MentsuPattern(shuntsu=[], koutsu=[], jantou=None)
 
-    def _parse_standard(self, tiles: List[Tile]) -> List[MentsuPattern]:
+    def _parse_standard_flexible(
+        self, tiles: List[Tile], needed: int
+    ) -> List[MentsuPattern]:
         """
-        解析标准型（4面子1雀头）
-
-        使用递归回溯算法找出所有可能的组合
+        解析标准型（needed个面子 + 1雀头）
 
         Args:
-            tiles: 14张牌
+            tiles: 门前部分的牌
+            needed: 需要从中拆出的面子数
 
         Returns:
             所有可能的标准型组合
         """
-        if len(tiles) != 14:
+        expected = needed * 3 + 2
+        if len(tiles) != expected:
             return []
 
         patterns = []
         tile_counts = Counter(tiles)
 
-        # 尝试所有可能的雀头
         seen: Set[Tuple] = set()
         for tile, count in tile_counts.items():
             if count >= 2:
-                # 选择这张牌作为雀头
                 remaining = tile_counts.copy()
                 remaining[tile] -= 2
                 if remaining[tile] == 0:
                     del remaining[tile]
 
-                # 递归查找所有合法的4个面子组合
                 for shuntsu_list, koutsu_list in self._find_mentsu(
-                    remaining, 4, [], []
+                    remaining, needed, [], []
                 ):
-                    # 去重：同一种拆分方式可能被多个雀头候选产生
                     key = (
                         tile,
                         tuple(sorted(shuntsu_list)),
@@ -201,6 +293,10 @@ class HandParser:
                     patterns.append(pattern)
 
         return patterns
+
+    # 保留旧方法名兼容
+    def _parse_standard(self, tiles: List[Tile]) -> List[MentsuPattern]:
+        return self._parse_standard_flexible(tiles, 4)
 
     def _find_mentsu(
         self,

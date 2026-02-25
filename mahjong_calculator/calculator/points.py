@@ -105,54 +105,34 @@ class PointsCalculator:
             "honba": honba,
         }
 
-        # 从点数表获取基础点
-        if han in self.POINTS_TABLE and fu in self.POINTS_TABLE[han]:
-            base_points = self.POINTS_TABLE[han][fu]
-        else:
-            # 计算基础点：fu * 2^(han+2)
-            base = fu * (2 ** (han + 2))
-            # 根据角色调整
-            if is_dealer:
-                if is_tsumo:
-                    each_pay = self._round_up(base * 2, 100)
-                    base_points = (each_pay * 3, each_pay, each_pay)
-                else:
-                    direct = self._round_up(base * 6, 100)
-                    base_points = (direct, 0, 0)
-            else:
-                if is_tsumo:
-                    dealer_pay = self._round_up(base * 2, 100)
-                    non_dealer_pay = self._round_up(base, 100)
-                    base_points = (
-                        dealer_pay + non_dealer_pay * 2,
-                        dealer_pay,
-                        non_dealer_pay,
-                    )
-                else:
-                    direct = self._round_up(base * 4, 100)
-                    base_points = (direct, 0, 0)
+        # 始终由公式推算基础点，确保各家付出额与总点数完全吻合
+        # 基础点 = fu * 2^(han+2)，再按角色/方式乘以倍率后上舍入到100
+        base = fu * (2 ** (han + 2))
 
         if is_tsumo:
-            total = base_points[0]
             if is_dealer:
-                # 庄家自摸，三家各付相同
-                each_pays = base_points[1]
+                # 庄家自摸：三家各付 base*2，上舍入到100
+                each_pays = self._round_up(base * 2, 100)
+                total = each_pays * 3
                 result["total_points"] = total + honba * 300
                 result["each_pays"] = each_pays + honba * 100
                 result["payment_detail"] = f"各家支付 {each_pays + honba * 100} 点"
             else:
-                # 闲家自摸
-                dealer_pays = base_points[1]
-                non_dealer_pays = base_points[2]
+                # 闲家自摸：庄付 base*2，各闲付 base*1，均上舍入到100
+                dealer_pays = self._round_up(base * 2, 100)
+                non_dealer_pays = self._round_up(base, 100)
+                total = dealer_pays + non_dealer_pays * 2
                 result["total_points"] = total + honba * 300
                 result["dealer_pays"] = dealer_pays + honba * 100
                 result["non_dealer_pays"] = non_dealer_pays + honba * 100
                 result["payment_detail"] = (
-                    f"庄家支付 {dealer_pays + honba * 100} 点，闲家各支付 {non_dealer_pays + honba * 100} 点"
+                    f"庄家支付 {dealer_pays + honba * 100} 点，"
+                    f"闲家各支付 {non_dealer_pays + honba * 100} 点"
                 )
         else:
-            # 荣和
-            direct = base_points[0]
+            # 荣和：庄家 base*6，闲家 base*4，上舍入到100
+            multiplier = 6 if is_dealer else 4
+            direct = self._round_up(base * multiplier, 100)
             result["total_points"] = direct + honba * 300
             result["direct_pay"] = direct + honba * 300
             result["payment_detail"] = f"放铳者支付 {direct + honba * 300} 点"

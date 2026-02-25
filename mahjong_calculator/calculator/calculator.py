@@ -22,7 +22,10 @@ class CalculationResult:
         self.total_points: int = 0  # 总点数（含本场）
         self.payment_detail: str = ""  # 支付详情
         self.name: Optional[str] = None  # 特殊名称（满贯、役满等）
-        self.dora_count: int = 0  # 宝牌数
+        self.dora_count: int = 0  # 宝牌总数（含表、里、赤）
+        self.indicator_dora_count: int = 0  # 表宝牌数
+        self.ura_dora_count: int = 0  # 里宝牌数
+        self.red_dora_count: int = 0  # 赤宝牌数
         self.is_valid: bool = True  # 是否合法
         self.error_message: str = ""  # 错误信息
 
@@ -132,21 +135,35 @@ class Calculator:
 
             # ---- 计算宝牌番数（与拆法无关，提前算好）----
             dora_count = 0
+            indicator_dora_count = 0
+            ura_dora_count = 0
+
+            all_tiles = hand_tiles + [win_tile_obj]
+
             if dora_indicators:
                 dora_tiles = [self._get_dora_tile(ind) for ind in dora_indicators]
-                all_tiles = hand_tiles + [win_tile_obj]
                 for dora in dora_tiles:
-                    dora_count += sum(1 for tile in all_tiles if tile == dora)
+                    cnt = sum(1 for tile in all_tiles if tile == dora)
+                    indicator_dora_count += cnt
+                    dora_count += cnt
 
             if ura_dora_indicators and (is_riichi or is_double_riichi):
                 ura_dora_tiles = [
                     self._get_dora_tile(ind) for ind in ura_dora_indicators
                 ]
-                all_tiles = hand_tiles + [win_tile_obj]
                 for dora in ura_dora_tiles:
-                    dora_count += sum(1 for tile in all_tiles if tile == dora)
+                    cnt = sum(1 for tile in all_tiles if tile == dora)
+                    ura_dora_count += cnt
+                    dora_count += cnt
+
+            # ---- 计算赤宝牌，合并进 dora_count ----
+            red_dora_count = sum(1 for tile in all_tiles if tile.is_red)
+            dora_count += red_dora_count
 
             result.dora_count = dora_count
+            result.indicator_dora_count = indicator_dora_count
+            result.ura_dora_count = ura_dora_count
+            result.red_dora_count = red_dora_count
 
             # ---- 遍历所有拆法，逐个计算 (役→符→点数)，取最高分 ----
             best_total_points = -1
@@ -176,7 +193,7 @@ class Calculator:
                     melds=None,
                 )
 
-                # 追加宝牌
+                # 追加宝牌（已含赤宝牌）
                 cur_yaku_with_dora = cur_yaku.copy()
                 if dora_count > 0:
                     cur_yaku_with_dora.append((f"宝牌x{dora_count}", dora_count))
@@ -185,7 +202,7 @@ class Calculator:
 
                 # 跳过无役的拆法（宝牌不算役）
                 if cur_total_han == 0 or (
-                    cur_total_han == dora_count and dora_count > 0
+                    dora_count > 0 and cur_total_han == dora_count
                 ):
                     continue
 

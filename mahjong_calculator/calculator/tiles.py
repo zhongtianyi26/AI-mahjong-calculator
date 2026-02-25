@@ -26,16 +26,18 @@ class Tile:
     - 1-7z: 东南西北白发中
     """
 
-    def __init__(self, value: int, tile_type: TileType):
+    def __init__(self, value: int, tile_type: TileType, is_red: bool = False):
         """
         初始化麻将牌
 
         Args:
             value: 牌的数值 (1-9 for 数牌, 1-7 for 字牌)
             tile_type: 牌的类型
+            is_red: 是否是红宝牌（赤五），只有数牌的5可以是红宝牌
         """
         self.value = value
         self.tile_type = tile_type
+        self.is_red = is_red
 
         # 验证合法性
         if tile_type in [TileType.MANZU, TileType.PINZU, TileType.SOUZU]:
@@ -45,13 +47,17 @@ class Tile:
             if not 1 <= value <= 7:
                 raise ValueError(f"字牌的值必须在1-7之间: {value}")
 
+        # 红宝牌只能是数牌的5
+        if is_red and (tile_type == TileType.JIHAI or value != 5):
+            raise ValueError(f"红宝牌只能是数牌的五: {value}{tile_type.value}")
+
     @classmethod
     def from_string(cls, tile_str: str) -> "Tile":
         """
         从字符串创建牌
 
         Args:
-            tile_str: 牌的字符串表示，如 "1m", "5p", "7z"
+            tile_str: 牌的字符串表示，如 "1m", "5p", "7z", "0m"（0表示红五）
 
         Returns:
             Tile对象
@@ -59,14 +65,23 @@ class Tile:
         if len(tile_str) != 2:
             raise ValueError(f"无效的牌表示: {tile_str}")
 
-        value = int(tile_str[0])
+        value_char = tile_str[0]
         type_char = tile_str[1]
-
         tile_type = TileType(type_char)
+
+        # 0 表示红宝牌（赤五）
+        if value_char == "0":
+            if tile_type == TileType.JIHAI:
+                raise ValueError(f"字牌没有红宝牌: {tile_str}")
+            return cls(5, tile_type, is_red=True)
+
+        value = int(value_char)
         return cls(value, tile_type)
 
     def to_string(self) -> str:
-        """转换为字符串表示"""
+        """转换为字符串表示，红宝牌用0表示（如红五万=0m）"""
+        if self.is_red:
+            return f"0{self.tile_type.value}"
         return f"{self.value}{self.tile_type.value}"
 
     def is_terminal(self) -> bool:
@@ -201,7 +216,13 @@ def parse_tiles_string(tiles_str: str) -> List[Tile]:
         elif char in ["m", "p", "s", "z"]:
             tile_type = TileType(char)
             for num in current_numbers:
-                tiles.append(Tile(num, tile_type))
+                if num == 0:
+                    # 0 表示红宝牌（赤五）
+                    if tile_type == TileType.JIHAI:
+                        raise ValueError(f"字牌没有红宝牌: 0{char}")
+                    tiles.append(Tile(5, tile_type, is_red=True))
+                else:
+                    tiles.append(Tile(num, tile_type))
             current_numbers = []
         else:
             raise ValueError(f"无效字符: {char}")
@@ -233,7 +254,8 @@ def tiles_to_string(tiles: List[Tile]) -> str:
     }
 
     for tile in sorted(tiles):
-        groups[tile.tile_type].append(tile.value)
+        # 红宝牌用0表示，以便输出时能还原
+        groups[tile.tile_type].append(0 if tile.is_red else tile.value)
 
     # 组合成字符串
     result = ""

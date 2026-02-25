@@ -85,7 +85,7 @@ _EMO: dict = {
     "4z": "\U0001f003",
     "5z": "\U0001f006",
     "6z": "\U0001f005",
-    "7z": "\U0001f004",
+    "7z": "\U0001f004\ufe0e",
 }
 _BACK_TILE = "\U0001f02b"
 
@@ -98,14 +98,12 @@ _CSS = """
 .block-container{padding-top:0.5rem!important;padding-bottom:0.5rem!important}
 .mj-row{display:flex;flex-wrap:wrap;gap:1px;align-items:flex-end;padding:2px 0;line-height:1}
 .mj-t{
-    display:inline-flex;align-items:center;justify-content:center;
-    font-size:42px;line-height:1;padding:3px 5px;
-    border:2px solid #bbb;border-radius:7px;
-    background:#DDD;
-    position:relative;cursor:default;
-    box-shadow:1px 2px 4px rgba(0,0,0,.25);
-    /* 使用常见的彩色 emoji 字体以确保所有牌表情一致 */
-    font-family: "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", "EmojiOne Color", sans-serif;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:42px;line-height:1;padding:3px 5px;
+  border:2px solid #bbb;border-radius:7px;
+  background:#DDD;
+  position:relative;cursor:default;
+  box-shadow:1px 2px 4px rgba(0,0,0,.25);
 }
 /* 花色底色 — 饱和度足够高，深色/浅色模式都可见 */
 .mj-t.man{background:#FFBB66;border-color:#BB5500}
